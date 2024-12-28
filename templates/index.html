@@ -24,6 +24,25 @@
             border: 1px solid #ddd;
             border-radius: 4px;
         }
+        .success {
+            color: #4CAF50;
+            font-weight: bold;
+            padding: 10px;
+            background: #e8f5e9;
+            border-radius: 4px;
+        }
+        .error {
+            color: #f44336;
+            padding: 10px;
+            background: #ffebee;
+            border-radius: 4px;
+        }
+        .loading {
+            color: #2196F3;
+            padding: 10px;
+            background: #e3f2fd;
+            border-radius: 4px;
+        }
     </style>
 </head>
 <body>
@@ -41,16 +60,16 @@
     <script>
 
         async function generatePassword() {
-        try {
-            const response = await fetch('/get_password');
-            const data = await response.json();
-            document.getElementById('result').innerHTML = 
-                `Generated Password: ${data.password}<br>MD5 Hash: ${data.md5_hash}`;
+            try {
+                const response = await fetch('/get_password');
+                const data = await response.json();
+                document.getElementById('result').innerHTML = 
+                    `Generated Password: ${data.password}<br>MD5 Hash: ${data.md5_hash}`;
             } catch (error) {
                 document.getElementById('result').innerHTML = 'Error: ' + error;
             }
         }
-                
+
         let eventSource;
 
         function startProgressMonitor() {
@@ -59,7 +78,6 @@
             eventSource.onmessage = function(event) {
                 if(event.data === 'done') {
                     eventSource.close();
-                    return;
                 }
                 const progress = parseFloat(event.data);
                 document.getElementById('progress').style.width = progress + '%';
@@ -70,7 +88,7 @@
         async function crackPassword() {
             try {
                 const resultDiv = document.getElementById('result');
-                resultDiv.innerHTML = 'Cracking password...';
+                resultDiv.innerHTML = '<div class="loading">Cracking password...</div>';
                 startProgressMonitor();
                 
                 const response = await fetch('/crack_and_check', {
@@ -79,12 +97,17 @@
                 });
                 
                 const data = await response.json();
-                resultDiv.innerHTML = data.success ? data.message : (data.error || data.message);
+                if (data.success) {
+                    resultDiv.innerHTML = `<div class="success">✅ ${data.message}</div>`;
+                } else {
+                    resultDiv.innerHTML = `<div class="error">❌ ${data.error || data.message}</div>`;
+                }
+                
                 if(eventSource) {
                     eventSource.close();
                 }
             } catch (error) {
-                document.getElementById('result').innerHTML = 'Error: ' + error;
+                document.getElementById('result').innerHTML = `<div class="error">Error: ${error}</div>`;
                 if(eventSource) {
                     eventSource.close();
                 }
