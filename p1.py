@@ -1,9 +1,9 @@
 import hashlib
-import itertools
 import random
 import string
 import time
 import asyncio
+import itertools
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, render_template_string, jsonify
 
@@ -41,8 +41,13 @@ HTML_TEMPLATE = """
             border: none;
             border-radius: 4px;
             cursor: pointer;
+            margin: 5px;
         }
         button:hover { background-color: #45a049; }
+        .method-select {
+            padding: 10px;
+            margin: 10px 0;
+        }
     </style>
     <script>
         async function getRandomHash() {
@@ -54,6 +59,7 @@ HTML_TEMPLATE = """
 
         async function crackHash() {
             const hash = document.getElementById('md5_hash').value;
+            const method = document.getElementById('crack_method').value;
             const resultDiv = document.getElementById('result');
             
             resultDiv.className = 'result';
@@ -64,14 +70,17 @@ HTML_TEMPLATE = """
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({hash: hash})
+                body: JSON.stringify({
+                    hash: hash,
+                    method: method
+                })
             });
             
             const data = await response.json();
             
             if (data.success) {
                 resultDiv.className = 'result success';
-                resultDiv.textContent = `Found password: ${data.password} (took ${data.time} seconds)`;
+                resultDiv.textContent = `Found password: ${data.password} (took ${data.time} seconds using ${method})`;
             } else {
                 resultDiv.className = 'result error';
                 resultDiv.textContent = `Failed to crack hash: ${data.error}`;
@@ -90,6 +99,10 @@ HTML_TEMPLATE = """
         
         <div style="margin: 20px 0;">
             <input type="text" id="md5_hash" placeholder="Enter MD5 hash" style="width: 300px; padding: 5px;">
+            <select id="crack_method" class="method-select">
+                <option value="thread">Thread</option>
+                <option value="async">Async</option>
+            </select>
             <button onclick="crackHash()">Crack Hash</button>
         </div>
         
@@ -118,19 +131,49 @@ class MD5Cracker:
             return True
         return False
 
-    def crack_with_threads(self, num_threads: int = 4):
-        def generate_passwords(length):
-            return [''.join(p) for p in itertools.product(self.chars, repeat=length)]
+    def generate_passwords(self, length):
+        return [''.join(p) for p in itertools.product(self.chars, repeat=length)]
 
+    def crack_with_threads(self, num_threads: int = 4):
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             for length in range(self.min_length, self.max_length + 1):
                 if self.stop_flag:
                     break
-                passwords = generate_passwords(length)
+                passwords = self.generate_passwords(length)
                 futures = [executor.submit(self.check_password, pwd) for pwd in passwords]
                 for future in futures:
                     if future.result():
                         return self.found_password
+        return None
+
+    async def _async_check_password(self, password: str):
+        if not self.stop_flag:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self.check_password, password)
+            if result:
+                return password
+        return None
+
+    async def crack_with_async(self):
+        for length in range(self.min_length, self.max_length + 1):
+            if self.stop_flag:
+                break
+            passwords = self.generate_passwords(length)
+            # Şifreleri chunk'lara bölelim
+            chunk_size = 1000
+            password_chunks = [passwords[i:i + chunk_size] for i in range(0, len(passwords), chunk_size)]
+            
+            for chunk in password_chunks:
+                if self.stop_flag:
+                    break
+                # Her chunk için async task oluştur
+                tasks = [self._async_check_password(pwd) for pwd in chunk]
+                results = await asyncio.gather(*tasks)
+                
+                # Sonuçları kontrol et
+                for result in results:
+                    if result:
+                        return result
         return None
 
 def generate_random_password(length=4):
@@ -155,11 +198,12 @@ def generate_hash():
     })
 
 @app.route('/crack', methods=['POST'])
-def crack_hash():
+async def crack_hash():
     """Attempt to crack the provided MD5 hash"""
     try:
         data = request.get_json()
         md5_hash = data.get('hash', '').strip()
+        method = data.get('method', 'thread')
 
         if not md5_hash:
             return jsonify({
@@ -175,7 +219,12 @@ def crack_hash():
 
         start_time = time.time()
         cracker = MD5Cracker(md5_hash)
-        password = cracker.crack_with_threads()
+        
+        if method == 'async':
+            password = await cracker.crack_with_async()
+        else:  # thread
+            password = cracker.crack_with_threads()
+            
         elapsed_time = time.time() - start_time
 
         if password:
@@ -197,4 +246,5 @@ def crack_hash():
         })
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Flask uygulamasını async olarak çalıştırmak için
+    app.run(debug=True, use_reloader=False)
