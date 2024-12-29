@@ -1,196 +1,199 @@
-from flask import Flask, request, jsonify, render_template, Response
 import hashlib
 import random
 import string
-import asyncio
-import json
-from concurrent.futures import ProcessPoolExecutor
-import itertools
-from multiprocessing import Value, cpu_count
-import os
 import time
-import signal
-import sys
-import ctypes
-from functools import lru_cache
-from typing import Optional
-
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from flask import Flask, request, render_template_string, jsonify
 
 app = Flask(__name__)
 
-progress = Value(ctypes.c_double, 0.0, lock=True)
-should_stop = Value(ctypes.c_bool, False, lock=True)
+# HTML template
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MD5 Cracker</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px;
+        }
+        .container { 
+            background-color: #f5f5f5; 
+            padding: 20px; 
+            border-radius: 5px;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success { background-color: #dff0d8; }
+        .error { background-color: #f2dede; }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover { background-color: #45a049; }
+    </style>
+    <script>
+        async function getRandomHash() {
+            const response = await fetch('/generate');
+            const data = await response.json();
+            document.getElementById('md5_hash').value = data.hash;
+            document.getElementById('original_password').textContent = `Original Password: ${data.password}`;
+        }
 
-
-# Signal handler for graceful shutdown
-def signal_handler(sig, frame):
-    should_stop.value = True
-    print("\nShutting down gracefully...")
-    sys.exit(0)
-
-
-signal.signal(signal.SIGINT, signal_handler)
-
-
-def calculate_total_combinations(max_length, chars):
-    return sum(len(chars) ** i for i in range(1, max_length + 1))
-
-
-@lru_cache(maxsize=256)
-def get_hash(s: str) -> str:
-    return hashlib.md5(s.encode()).hexdigest()
-
-
-def crack_chunk(args):
-    chars, start_idx, chunk_size, target_hash, length, total_combinations = args
-    combinations = itertools.islice(itertools.product(chars, repeat=length), start_idx, start_idx + chunk_size)
-    length_weight = (len(chars) ** length) / total_combinations
-    progress_increment = max((length_weight * 100) / (chunk_size * cpu_count()), 0.01)
-
-    for i, combo in enumerate(combinations):
-        if should_stop.value:
-            return None
-        guess = ''.join(combo)
-        if get_hash(guess) == target_hash:
-            should_stop.value = True
-            return guess
-        if i % 1000 == 0:
-            with progress.get_lock():
-                progress.value += progress_increment
-    return None
-
-
-@app.route('/progress')
-def progress_stream():
-    def generate():
-        try:
-            last_progress = -1
-            while True:
-                current_progress = progress.value
-                if current_progress != last_progress:
-                    last_progress = current_progress
-                    if current_progress >= 100 or should_stop.value:
-                        yield "data: done\n\n"
-                        break
-                    yield f"data: {min(current_progress, 100):.2f}\n\n"
-                time.sleep(0.1)
-        except Exception as e:
-            print(f"Progress stream error: {e}")
-            yield "data: error\n\n"
-
-    return Response(generate(), mimetype='text/event-stream')
-
-def reset_progress():
-    with progress.get_lock():
-        progress.value = 0.0
-    should_stop.value = False
-
-def update_progress(increment):
-    with progress.get_lock():
-        progress.value = min(progress.value + increment, 100.0)
-
-
-def parallel_brute_force(target_hash: str, max_length: int = 8, processes: Optional[int] = None) -> Optional[str]:
-    if processes is None:
-        processes = cpu_count()
-
-    chars = string.ascii_letters + string.digits
-    chunk_size = max(50000 // cpu_count(), 1000)
-    total_combinations = calculate_total_combinations(max_length, chars)
-
-    with ProcessPoolExecutor(max_workers=processes) as executor:
-        for length in range(1, max_length + 1):
-            if should_stop.value:
-                break
-
-            total_for_length = len(chars) ** length
-            chunks = [
-                (chars, start_idx, min(chunk_size, total_for_length - start_idx), target_hash, length, total_combinations)
-                for start_idx in range(0, total_for_length, chunk_size)
-            ]
-
-            for result in executor.map(crack_chunk, chunks):
-                if result:
-                    should_stop.value = True
-                    return result
-
-    return None
-
-
-async def async_generate_password():
-    try:
-        os.makedirs("data", exist_ok=True)
-        password = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-        hash_value = hashlib.md5(password.encode()).hexdigest()
-
-        with open("data/password.json", "w") as f:
-            json.dump({"hash": hash_value}, f, indent=4)  # Added indent for better readability
-
-        return password, hash_value
-    except Exception as e:
-        raise RuntimeError(f"Error generating password: {e}")
-
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-
-@app.route("/get_password", methods=["GET"])
-async def get_password():
-    password, hash_value = await async_generate_password()
-    return jsonify({"password": password, "md5_hash": hash_value})
-
-@app.route("/crack_and_check", methods=["POST"])
-async def crack_and_check():
-    try:
-        with progress.get_lock():
-            progress.value = 0.0
+        async function crackHash() {
+            const hash = document.getElementById('md5_hash').value;
+            const resultDiv = document.getElementById('result');
             
-        target_hash = None
+            resultDiv.className = 'result';
+            resultDiv.textContent = 'Cracking in progress...';
+            
+            const response = await fetch('/crack', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({hash: hash})
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                resultDiv.className = 'result success';
+                resultDiv.textContent = `Found password: ${data.password} (took ${data.time} seconds)`;
+            } else {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `Failed to crack hash: ${data.error}`;
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1>MD5 Hash Cracker</h1>
         
-        # Check if password file exists and read hash
-        if os.path.exists("data/password.json"):
-            try:
-                with open("data/password.json", "r") as f:
-                    stored_data = json.load(f)
-                    target_hash = stored_data.get("hash")
-                    if not target_hash:
-                        raise ValueError("Hash not found in the password file")
-                    print(f"Found stored hash: {target_hash}")  # Debug log
-            except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-                print(f"Error reading password file: {e}")  # Debug log
-                return jsonify({"error": "Password data is missing or corrupted"}), 500
+        <div>
+            <button onclick="getRandomHash()">Generate Random Hash</button>
+            <p id="original_password"></p>
+        </div>
         
-        # Generate new password if no hash found
-        if not target_hash:
-            password, target_hash = await async_generate_password()
-            print(f"Generated new hash: {target_hash}")  # Debug log
+        <div style="margin: 20px 0;">
+            <input type="text" id="md5_hash" placeholder="Enter MD5 hash" style="width: 300px; padding: 5px;">
+            <button onclick="crackHash()">Crack Hash</button>
+        </div>
+        
+        <div id="result" class="result"></div>
+    </div>
+</body>
+</html>
+"""
 
-        # Attempt to crack the password
-        cracked_password = await asyncio.to_thread(
-            parallel_brute_force,
-            target_hash,
-            max_length=8
-        )
+class MD5Cracker:
+    def __init__(self, hash_to_crack: str, min_length: int = 1, max_length: int = 6):
+        self.hash_to_crack = hash_to_crack.lower()
+        self.min_length = min_length
+        self.max_length = max_length
+        self.chars = string.ascii_lowercase + string.digits
+        self.found_password = None
+        self.stop_flag = False
 
-        if cracked_password:
-            return jsonify({
-                "success": True,
-                "message": f"Password cracked: {cracked_password}"
-            })
-        return jsonify({
-            "success": False,
-            "message": "Password not found"
-        })
-    except Exception as e:
-        print(f"Cracking error: {e}")  # Debug log
-        return jsonify({"success": False, "error": str(e)}), 500
+    def check_password(self, password: str) -> bool:
+        if self.stop_flag:
+            return False
+        hashed = hashlib.md5(password.encode()).hexdigest()
+        if hashed == self.hash_to_crack:
+            self.found_password = password
+            self.stop_flag = True
+            return True
+        return False
 
+    def crack_with_threads(self, num_threads: int = 4):
+        def generate_passwords(length):
+            return [''.join(p) for p in itertools.product(self.chars, repeat=length)]
 
-if __name__ == "__main__":
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            for length in range(self.min_length, self.max_length + 1):
+                if self.stop_flag:
+                    break
+                passwords = generate_passwords(length)
+                futures = [executor.submit(self.check_password, pwd) for pwd in passwords]
+                for future in futures:
+                    if future.result():
+                        return self.found_password
+        return None
+
+def generate_random_password(length=4):
+    """Generate a random password and its MD5 hash"""
+    chars = string.ascii_lowercase + string.digits
+    password = ''.join(random.choice(chars) for _ in range(length))
+    md5_hash = hashlib.md5(password.encode()).hexdigest()
+    return password, md5_hash
+
+@app.route('/')
+def index():
+    """Render the main page"""
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/generate')
+def generate_hash():
+    """Generate a random password and its hash"""
+    password, md5_hash = generate_random_password()
+    return jsonify({
+        'password': password,
+        'hash': md5_hash
+    })
+
+@app.route('/crack', methods=['POST'])
+def crack_hash():
+    """Attempt to crack the provided MD5 hash"""
     try:
-        app.run(host="0.0.0.0", debug=True)
-    except KeyboardInterrupt:
-        print("\nShutting down gracefully...")
-        sys.exit(0)
+        data = request.get_json()
+        md5_hash = data.get('hash', '').strip()
+
+        if not md5_hash:
+            return jsonify({
+                'success': False,
+                'error': 'No hash provided'
+            })
+
+        if not all(c in string.hexdigits for c in md5_hash) or len(md5_hash) != 32:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid MD5 hash'
+            })
+
+        start_time = time.time()
+        cracker = MD5Cracker(md5_hash)
+        password = cracker.crack_with_threads()
+        elapsed_time = time.time() - start_time
+
+        if password:
+            return jsonify({
+                'success': True,
+                'password': password,
+                'time': f'{elapsed_time:.2f}'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Could not crack hash'
+            })
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+if __name__ == '__main__':
+    app.run(debug=True)
